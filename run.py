@@ -20,18 +20,22 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='TimesNet')
 
     # basic config
-    parser.add_argument('--task_name', type=str, required=True, default='long_term_forecast',
+    parser.add_argument('--task_name', type=str, required=False, default='long_term_forecast',
                         help='task name, options:[long_term_forecast, short_term_forecast, imputation, classification, anomaly_detection]')
-    parser.add_argument('--is_training', type=int, required=True, default=1, help='status')
-    parser.add_argument('--model_id', type=str, required=True, default='test', help='model id')
-    parser.add_argument('--model', type=str, required=True, default='Autoformer',
+    parser.add_argument('--is_training', type=int, required=False, default=1, help='status')
+    parser.add_argument('--model_id', type=str, required=False, default='test', help='model id')
+    parser.add_argument('--model', type=str, required=False, default='MultiPatchFormer',
                         help='model name, options: [Autoformer, Transformer, TimesNet]')
+    # 一次跑多个模型时使用，多个模型名用逗号分隔，例如：
+    # --model_list MultiPatchFormer,TimeFilter,KANAD
+    parser.add_argument('--model_list', type=str, required=False, default=None,
+                        help='run multiple models, split by comma, e.g. "Autoformer,Transformer,TimeFilter"')
 
     # data loader
-    parser.add_argument('--data', type=str, required=True, default='ETTh1', help='dataset type')
-    parser.add_argument('--root_path', type=str, default='./data/ETT/', help='root path of the data file')
+    parser.add_argument('--data', type=str, required=False, default='ETTh1', help='dataset type')
+    parser.add_argument('--root_path', type=str, default='./', help='root path of the data file')
     parser.add_argument('--data_path', type=str, default='ETTh1.csv', help='data file')
-    parser.add_argument('--features', type=str, default='M',
+    parser.add_argument('--features', type=str, default='MS',
                         help='forecasting task, options:[M, S, MS]; M:multivariate predict multivariate, S:univariate predict univariate, MS:multivariate predict univariate')
     parser.add_argument('--target', type=str, default='OT', help='target feature in S or MS task')
     parser.add_argument('--freq', type=str, default='h',
@@ -58,7 +62,7 @@ if __name__ == '__main__':
     parser.add_argument('--num_kernels', type=int, default=6, help='for Inception')
     parser.add_argument('--enc_in', type=int, default=7, help='encoder input size')
     parser.add_argument('--dec_in', type=int, default=7, help='decoder input size')
-    parser.add_argument('--c_out', type=int, default=7, help='output size')
+    parser.add_argument('--c_out', type=int, default=1, help='output size')
     parser.add_argument('--d_model', type=int, default=512, help='dimension of model')
     parser.add_argument('--n_heads', type=int, default=8, help='num of heads')
     parser.add_argument('--e_layers', type=int, default=2, help='num of encoder layers')
@@ -89,7 +93,7 @@ if __name__ == '__main__':
     parser.add_argument('--num_workers', type=int, default=10, help='data loader num workers')
     parser.add_argument('--itr', type=int, default=1, help='experiments times')
     parser.add_argument('--train_epochs', type=int, default=10, help='train epochs')
-    parser.add_argument('--batch_size', type=int, default=32, help='batch size of train input data')
+    parser.add_argument('--batch_size', type=int, default=16, help='batch size of train input data')
     parser.add_argument('--patience', type=int, default=3, help='early stopping patience')
     parser.add_argument('--learning_rate', type=float, default=0.0001, help='optimizer learning rate')
     parser.add_argument('--des', type=str, default='test', help='exp description')
@@ -157,6 +161,8 @@ if __name__ == '__main__':
     parser.add_argument('--pos', type=int, choices=[0, 1], default=1, help='Positional Embedding. Set pos to 0 or 1')
 
     args = parser.parse_args()
+
+    # 设备选择
     if torch.cuda.is_available() and args.use_gpu:
         args.device = torch.device('cuda:{}'.format(args.gpu))
         print('Using GPU')
@@ -173,9 +179,7 @@ if __name__ == '__main__':
         args.device_ids = [int(id_) for id_ in device_ids]
         args.gpu = args.device_ids[0]
 
-    print('Args in experiment:')
-    print_args(args)
-
+    # 根据 task 选择实验类
     if args.task_name == 'long_term_forecast':
         Exp = Exp_Long_Term_Forecast
     elif args.task_name == 'short_term_forecast':
@@ -189,10 +193,32 @@ if __name__ == '__main__':
     else:
         Exp = Exp_Long_Term_Forecast
 
+# ================== 多模型循环：支持 --model_list ==================
+# 解析要跑的模型列表：
+# 如果传了 --model_list，就按列表跑；否则只跑单个 args.model
+if args.model_list is not None and args.model_list.strip() != "":
+    model_list = [m.strip() for m in args.model_list.split(',') if m.strip() != ""]
+else:
+    model_list = [args.model]
+
+# 依次对每个模型跑实验
+for model_name in model_list:
+    args.model = model_name
+
+    print('\n' + '=' * 80)
+    print(f'现在开始运行模型: {model_name}')
+    print('=' * 80)
+
+    print('Args in experiment:')
+    print_args(args)
+
     if args.is_training:
+        # 训练模式：可能会跑多次 itr
         for ii in range(args.itr):
-            # setting record of experiments
+            # 每次 itr 都重新创建一个实验对象
             exp = Exp(args)  # set experiments
+
+            # setting record of experiments
             setting = '{}_{}_{}_{}_ft{}_sl{}_ll{}_pl{}_dm{}_nh{}_el{}_dl{}_df{}_expand{}_dc{}_fc{}_eb{}_dt{}_{}_{}'.format(
                 args.task_name,
                 args.model_id,
@@ -219,13 +245,21 @@ if __name__ == '__main__':
 
             print('>>>>>>>testing : {}<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<'.format(setting))
             exp.test(setting)
+
+            # ================== 跑完一次 itr 后释放显存 ==================
+            del exp
+            gc.collect()
             if args.gpu_type == 'mps':
                 torch.backends.mps.empty_cache()
             elif args.gpu_type == 'cuda':
                 torch.cuda.empty_cache()
+            # ======================================================
+
     else:
-        exp = Exp(args)  # set experiments
+        # 只测试，不训练
         ii = 0
+        exp = Exp(args)  # set experiments
+
         setting = '{}_{}_{}_{}_ft{}_sl{}_ll{}_pl{}_dm{}_nh{}_el{}_dl{}_df{}_expand{}_dc{}_fc{}_eb{}_dt{}_{}_{}'.format(
             args.task_name,
             args.model_id,
@@ -249,7 +283,19 @@ if __name__ == '__main__':
 
         print('>>>>>>>testing : {}<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<'.format(setting))
         exp.test(setting, test=1)
+
+        # ================== 测试完释放显存 ==================
+        del exp
+        gc.collect()
         if args.gpu_type == 'mps':
             torch.backends.mps.empty_cache()
         elif args.gpu_type == 'cuda':
             torch.cuda.empty_cache()
+        # ==================================================
+
+    # 每个模型跑完之后，再保险清一次
+    if args.gpu_type == 'mps':
+        torch.backends.mps.empty_cache()
+    elif args.gpu_type == 'cuda':
+        torch.cuda.empty_cache()
+    gc.collect()
