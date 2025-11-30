@@ -1,5 +1,6 @@
 import argparse
 import os
+import gc
 import torch
 import torch.backends
 from exp.exp_long_term_forecasting import Exp_Long_Term_Forecast
@@ -11,7 +12,9 @@ from utils.print_args import print_args
 import random
 import numpy as np
 
-if __name__ == '__main__':
+
+def main():
+    # 固定随机种子
     fix_seed = 2021
     random.seed(fix_seed)
     torch.manual_seed(fix_seed)
@@ -24,7 +27,7 @@ if __name__ == '__main__':
                         help='task name, options:[long_term_forecast, short_term_forecast, imputation, classification, anomaly_detection]')
     parser.add_argument('--is_training', type=int, required=False, default=1, help='status')
     parser.add_argument('--model_id', type=str, required=False, default='test', help='model id')
-    parser.add_argument('--model', type=str, required=False, default='MultiPatchFormer',
+    parser.add_argument('--model', type=str, required=False, default='WPMixer',
                         help='model name, options: [Autoformer, Transformer, TimesNet]')
     # 一次跑多个模型时使用，多个模型名用逗号分隔，例如：
     # --model_list MultiPatchFormer,TimeFilter,KANAD
@@ -193,32 +196,73 @@ if __name__ == '__main__':
     else:
         Exp = Exp_Long_Term_Forecast
 
-# ================== 多模型循环：支持 --model_list ==================
-# 解析要跑的模型列表：
-# 如果传了 --model_list，就按列表跑；否则只跑单个 args.model
-if args.model_list is not None and args.model_list.strip() != "":
-    model_list = [m.strip() for m in args.model_list.split(',') if m.strip() != ""]
-else:
-    model_list = [args.model]
+    # ================== 多模型循环：支持 --model_list ==================
+    # 解析要跑的模型列表：
+    # 如果传了 --model_list，就按列表跑；否则只跑单个 args.model
+    if args.model_list is not None and args.model_list.strip() != "":
+        model_list = [m.strip() for m in args.model_list.split(',') if m.strip() != ""]
+    else:
+        model_list = [args.model]
 
-# 依次对每个模型跑实验
-for model_name in model_list:
-    args.model = model_name
+    # 依次对每个模型跑实验
+    for model_name in model_list:
+        args.model = model_name
 
-    print('\n' + '=' * 80)
-    print(f'现在开始运行模型: {model_name}')
-    print('=' * 80)
+        print('\n' + '=' * 80)
+        print(f'现在开始运行模型: {model_name}')
+        print('=' * 80)
 
-    print('Args in experiment:')
-    print_args(args)
+        print('Args in experiment:')
+        print_args(args)
 
-    if args.is_training:
-        # 训练模式：可能会跑多次 itr
-        for ii in range(args.itr):
-            # 每次 itr 都重新创建一个实验对象
+        if args.is_training:
+            # 训练模式：可能会跑多次 itr
+            for ii in range(args.itr):
+                # 每次 itr 都重新创建一个实验对象
+                exp = Exp(args)  # set experiments
+
+                # setting record of experiments
+                setting = '{}_{}_{}_{}_ft{}_sl{}_ll{}_pl{}_dm{}_nh{}_el{}_dl{}_df{}_expand{}_dc{}_fc{}_eb{}_dt{}_{}_{}'.format(
+                    args.task_name,
+                    args.model_id,
+                    args.model,
+                    args.data,
+                    args.features,
+                    args.seq_len,
+                    args.label_len,
+                    args.pred_len,
+                    args.d_model,
+                    args.n_heads,
+                    args.e_layers,
+                    args.d_layers,
+                    args.d_ff,
+                    args.expand,
+                    args.d_conv,
+                    args.factor,
+                    args.embed,
+                    args.distil,
+                    args.des, ii)
+
+                print('>>>>>>>start training : {}>>>>>>>>>>>>>>>>>>>>>>>>>>'.format(setting))
+                exp.train(setting)
+
+                print('>>>>>>>testing : {}<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<'.format(setting))
+                exp.test(setting)
+
+                # ================== 跑完一次 itr 后释放显存 ==================
+                del exp
+                gc.collect()
+                if args.gpu_type == 'mps':
+                    torch.backends.mps.empty_cache()
+                elif args.gpu_type == 'cuda':
+                    torch.cuda.empty_cache()
+                # ======================================================
+
+        else:
+            # 只测试，不训练
+            ii = 0
             exp = Exp(args)  # set experiments
 
-            # setting record of experiments
             setting = '{}_{}_{}_{}_ft{}_sl{}_ll{}_pl{}_dm{}_nh{}_el{}_dl{}_df{}_expand{}_dc{}_fc{}_eb{}_dt{}_{}_{}'.format(
                 args.task_name,
                 args.model_id,
@@ -240,62 +284,25 @@ for model_name in model_list:
                 args.distil,
                 args.des, ii)
 
-            print('>>>>>>>start training : {}>>>>>>>>>>>>>>>>>>>>>>>>>>'.format(setting))
-            exp.train(setting)
-
             print('>>>>>>>testing : {}<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<'.format(setting))
-            exp.test(setting)
+            exp.test(setting, test=1)
 
-            # ================== 跑完一次 itr 后释放显存 ==================
+            # ================== 测试完释放显存 ==================
             del exp
             gc.collect()
             if args.gpu_type == 'mps':
                 torch.backends.mps.empty_cache()
             elif args.gpu_type == 'cuda':
                 torch.cuda.empty_cache()
-            # ======================================================
+            # ==================================================
 
-    else:
-        # 只测试，不训练
-        ii = 0
-        exp = Exp(args)  # set experiments
-
-        setting = '{}_{}_{}_{}_ft{}_sl{}_ll{}_pl{}_dm{}_nh{}_el{}_dl{}_df{}_expand{}_dc{}_fc{}_eb{}_dt{}_{}_{}'.format(
-            args.task_name,
-            args.model_id,
-            args.model,
-            args.data,
-            args.features,
-            args.seq_len,
-            args.label_len,
-            args.pred_len,
-            args.d_model,
-            args.n_heads,
-            args.e_layers,
-            args.d_layers,
-            args.d_ff,
-            args.expand,
-            args.d_conv,
-            args.factor,
-            args.embed,
-            args.distil,
-            args.des, ii)
-
-        print('>>>>>>>testing : {}<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<'.format(setting))
-        exp.test(setting, test=1)
-
-        # ================== 测试完释放显存 ==================
-        del exp
-        gc.collect()
+        # 每个模型跑完之后，再保险清一次
         if args.gpu_type == 'mps':
             torch.backends.mps.empty_cache()
         elif args.gpu_type == 'cuda':
             torch.cuda.empty_cache()
-        # ==================================================
+        gc.collect()
 
-    # 每个模型跑完之后，再保险清一次
-    if args.gpu_type == 'mps':
-        torch.backends.mps.empty_cache()
-    elif args.gpu_type == 'cuda':
-        torch.cuda.empty_cache()
-    gc.collect()
+
+if __name__ == '__main__':
+    main()

@@ -279,7 +279,7 @@ class Model(nn.Module):
                                        wavelet_name=wavelet,
                                        level=level,
                                        batch_size=self.args.batch_size,
-                                       channel=self.args.c_out,
+                                       channel=self.args.enc_in,
                                        d_model=self.args.d_model,
                                        dropout=self.args.dropout,
                                        embedding_dropout=self.args.dropout,
